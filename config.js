@@ -9,7 +9,7 @@ const config = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,
     chatModel: "gemini-1.5-flash",
-    embeddingModel: "text-embedding-004",
+    embeddingModel: "gemini-embedding-2",
   },
   wordpress: {
     url: (process.env.WORDPRESS_URL || "").replace(/\/$/, ""), // ตัด / ท้ายออก

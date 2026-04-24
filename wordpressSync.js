@@ -32,18 +32,25 @@ function chunkText(text, size = config.rag.chunkSize, overlap = config.rag.chunk
   const chunks = [];
   let start = 0;
 
+  // ป้องกัน Loop ค้างถ้าเนื้อหาว่าง
+  if (!text || text.length === 0) return [];
+
   while (start < text.length) {
     const end = Math.min(start + size, text.length);
     let chunk = text.slice(start, end);
 
-    // ตัดที่ word boundary ถ้าไม่ใช่ chunk สุดท้าย
     if (end < text.length) {
       const lastSpace = chunk.lastIndexOf(" ");
       if (lastSpace > size * 0.7) chunk = chunk.slice(0, lastSpace);
     }
 
-    if (chunk.trim().length > 50) chunks.push(chunk.trim());
-    start += chunk.length - overlap;
+    if (chunk.trim().length > 50) {
+      chunks.push(chunk.trim());
+    }
+
+    // แก้ไขจุดนี้: เพื่อป้องกัน Infinite Loop ถ้า chunk.length เป็น 0 ให้ขยับไป 1 เสมอ
+    const moveStep = chunk.length - overlap;
+    start += (moveStep > 0) ? moveStep : size; 
   }
 
   return chunks;
@@ -55,9 +62,28 @@ function chunkText(text, size = config.rag.chunkSize, overlap = config.rag.chunk
 
 /** สร้าง embedding vector จาก text */
 async function embedText(text) {
-  const model = genAI.getGenerativeModel({ model: config.gemini.embeddingModel });
-  const result = await model.embedContent(text);
-  return result.embedding.values;
+  const apiKey = config.gemini.apiKey;
+  // ใช้ชื่อโมเดลที่ Google ยืนยันว่าคุณมีสิทธิ์ (จากที่รัน PowerShell)
+  const modelName = "models/gemini-embedding-2"; 
+  const url = `https://generativelanguage.googleapis.com/v1beta/${modelName}:embedContent?key=${apiKey}`;
+
+  try {
+    const response = await axios.post(url, {
+      content: { parts: [{ text }] },
+      // บังคับให้ขนาดข้อมูลเท่ากับ 768 เพื่อให้ลง Supabase ได้
+      outputDimensionality: 768 
+    });
+    
+    if (response.data && response.data.embedding) {
+      return response.data.embedding.values;
+    }
+    throw new Error("โครงสร้างข้อมูลจาก Google ไม่ถูกต้อง");
+  } catch (error) {
+    if (error.response?.data) {
+      console.error("❌ Google Detail:", JSON.stringify(error.response.data));
+    }
+    throw error;
+  }
 }
 
 /** Embed หลาย texts เป็น batch (พร้อม rate-limit delay) */
@@ -157,6 +183,12 @@ async function indexArticle(article) {
   const modifiedAt  = article.modified || article.date;
   const categories  = await fetchCategoryNames(article.categories || []);
   const fullText    = `${title}\n\n${bodyText}`;
+
+  // --- เพิ่มบรรทัดนี้เพื่อป้องกัน Memory เต็ม ---
+  let rawContent = article.content?.rendered || "";
+  if (rawContent.length > 50000) { // ถ้าเนื้อหายาวเกิน 5 หมื่นตัวอักษร (ซึ่งผิดปกติสำหรับบทความทั่วไป)
+      rawContent = rawContent.slice(0, 50000); 
+  }
 
   if (fullText.trim().length < 100) {
     console.log(`  ⏭️  ข้าม (บทความสั้นเกิน): "${title}"`);

@@ -37,7 +37,7 @@ async function handleText(event) {
   // ── คำสั่งพิเศษ ──
   if (text === "/clear" || text === "ล้างประวัติ") {
     clearChatSession(userId);
-    return replyText(replyToken, "🗑️ ล้างประวัติการสนทนาแล้วค่ะ ถามใหม่ได้เลย!");
+    return replyText(replyToken, "🗑️ ล้างประวัติการสนทนาแล้วค่npm run syncะ ถามใหม่ได้เลย!");
   }
 
   if (text === "/help" || text === "ช่วยเหลือ") {
