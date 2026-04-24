@@ -2,10 +2,10 @@
   "name": "smglinebot",
   "version": "2.1.0",
   "description": "Line OA Chatbot — WordPress RAG + Gemini + Supabase",
-  "main": "ndex.js",
+  "main": "index.js",
   "scripts": {
-    "start":       "node ndex.js",
-    "dev":         "nodemon ndex.js",
+    "start":       "node index.js",
+    "dev":         "nodemon index.js",
     "sync":        "node syncWordpress.js",
     "sync:full":   "node syncWordpress.js --full",
     "db:setup":    "node setupDatabase.js",
