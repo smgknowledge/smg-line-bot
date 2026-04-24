@@ -1,0 +1,40 @@
+{
+  "name": "smglinebot",
+  "version": "2.1.0",
+  "description": "Line OA Chatbot — WordPress RAG + Gemini + Supabase",
+  "main": "ndex.js",
+  "scripts": {
+    "start":       "node ndex.js",
+    "dev":         "nodemon ndex.js",
+    "sync":        "node syncWordpress.js",
+    "sync:full":   "node syncWordpress.js --full",
+    "db:setup":    "node setupDatabase.js",
+    "ingest":      "node ingest.js",
+    "ingest:all":  "node ingest.js --all",
+    "ingest:manual": "node ingest.js --manual",
+    "ingest:sheet":  "node ingest.js --sheet",
+    "ingest:folder": "node ingest.js --folder"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@line/bot-sdk":         "^9.3.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "axios":                 "^1.7.2",
+    "dotenv":                "^16.4.5",
+    "express":               "^4.19.2",
+    "html-to-text":          "^9.0.5",
+    "node-cron":             "^3.0.3"
+  },
+  "optionalDependencies": {
+    "pdf-parse":  "^1.1.1",
+    "mammoth":    "^1.8.0",
+    "xlsx":       "^0.18.5",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
