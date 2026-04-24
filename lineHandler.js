@@ -61,8 +61,8 @@ async function handleText(event) {
       .showLoadingAnimation({ chatId: userId, loadingSeconds: 20 })
       .catch(() => {});
 
-    const answer = await generateAnswer(userId, text);
-    await replyText(replyToken, answer);
+    const result = await generateAnswer(userId, text);
+  await replyText(replyToken, result.answer);
   } catch (err) {
     console.error("❌ generateAnswer error:", err.message);
     await replyText(
