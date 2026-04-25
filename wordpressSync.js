@@ -1,10 +1,16 @@
 // src/wordpressSync.js
 // ดึงบทความจาก WordPress REST API → chunk → embed → เก็บใน Supabase
+// รองรับ: full sync, incremental sync (เฉพาะที่แก้ไขใหม่), single article
 
 const axios = require("axios");
 const { convert } = require("html-to-text");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { addDocuments, deleteArticle, getIndexedArticleIds, initVectorStore } = require("./vectorStore");
+const {
+  addDocuments,
+  deleteArticle,
+  getIndexedArticleIds,
+  getModifiedAtMap,
+} = require("./vectorStore");
 const { config } = require("./config");
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
@@ -13,96 +19,150 @@ const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 // Text Utilities
 // ─────────────────────────────────────────
 
-/** แปลง HTML → plain text */
 function htmlToPlainText(html) {
   return convert(html, {
     wordwrap: false,
     selectors: [
-      { selector: "a",      options: { ignoreHref: true } },
-      { selector: "img",    format: "skip" },
+      { selector: "a", options: { ignoreHref: true } },
+      { selector: "img", format: "skip" },
       { selector: "figure", format: "skip" },
       { selector: "script", format: "skip" },
-      { selector: "style",  format: "skip" },
+      { selector: "style", format: "skip" },
     ],
   }).trim();
 }
 
-/** แบ่ง text เป็น chunks พร้อม overlap */
-function chunkText(text, size = config.rag.chunkSize, overlap = config.rag.chunkOverlap) {
+// --- ส่วนของ chunkText ที่ปลอดภัยขึ้น ---
+function chunkText(
+  text,
+  size = config.rag.chunkSize,
+  overlap = config.rag.chunkOverlap,
+) {
   const chunks = [];
   let start = 0;
 
-  // ป้องกัน Loop ค้างถ้าเนื้อหาว่าง
-  if (!text || text.length === 0) return [];
+  if (!text) return [];
 
   while (start < text.length) {
-    const end = Math.min(start + size, text.length);
+    let end = start + size;
     let chunk = text.slice(start, end);
 
     if (end < text.length) {
       const lastSpace = chunk.lastIndexOf(" ");
-      if (lastSpace > size * 0.7) chunk = chunk.slice(0, lastSpace);
+      // ถ้าหาช่องว่างเจอ และอยู่เกิน 70% ของ chunk ให้ตัดตรงช่องว่าง
+      if (lastSpace > size * 0.7) {
+        chunk = chunk.slice(0, lastSpace);
+      }
     }
 
-    if (chunk.trim().length > 50) {
-      chunks.push(chunk.trim());
+    const trimmedChunk = chunk.trim();
+    if (trimmedChunk.length > 50) {
+      chunks.push(trimmedChunk);
     }
 
-    // แก้ไขจุดนี้: เพื่อป้องกัน Infinite Loop ถ้า chunk.length เป็น 0 ให้ขยับไป 1 เสมอ
+    // จุดสำคัญ: ต้องแน่ใจว่า start เพิ่มขึ้นเสมอ
     const moveStep = chunk.length - overlap;
-    start += (moveStep > 0) ? moveStep : size; 
+    start += moveStep > 0 ? moveStep : chunk.length;
+
+    // Safety break: ป้องกันค้าง
+    if (chunks.length > 1000) break;
+  }
+  return chunks;
+}
+
+// --- ส่วนของ indexArticle ที่ประหยัด RAM ---
+async function indexArticle(article) {
+  const articleId = String(article.id);
+  const title = article.title?.rendered || "Untitled";
+
+  // แปลง HTML เป็น Text
+  const bodyText = htmlToPlainText(article.content?.rendered || "");
+
+  // แทนที่จะเอา title + bodyText เป็น string ยักษ์ก้อนเดียว
+  // ให้ส่งเข้า chunkText ไปเลย
+  const chunks = chunkText(bodyText);
+
+  if (chunks.length === 0) return 0;
+
+  // เอา title ไปแปะแค่ใน chunk แรก หรือจะใส่ทุก chunk แบบสั้นๆ ก็ได้
+  chunks[0] = `หัวข้อ: ${title}\n${chunks[0]}`;
+
+  console.log(` 📝 "${title}" → ${chunks.length} chunks`);
+
+  // ดึง Embeddings
+  const embeddings = await batchEmbed(chunks);
+
+  // สร้าง Documents แบบไม่เก็บตัวแปรใหญ่ค้างไว้
+  const documents = [];
+  for (let i = 0; i < chunks.length; i++) {
+    documents.push({
+      id: `article_${articleId}_chunk_${i}`,
+      text: chunks[i],
+      embedding: embeddings[i],
+      metadata: {
+        articleId,
+        title,
+        excerpt: htmlToPlainText(article.excerpt?.rendered || "").slice(0, 300),
+        link: article.link || "",
+        modifiedAt: article.modified || article.date,
+        chunkIndex: i,
+        totalChunks: chunks.length,
+        categories: "", // ค่อยไปดึงข้างนอกถ้าจำเป็น
+      },
+    });
   }
 
-  return chunks;
+  await deleteArticle(articleId);
+  await addDocuments(documents);
+
+  // เคลียร์ค่าช่วย Garbage Collector
+  return chunks.length;
 }
 
 // ─────────────────────────────────────────
 // Gemini Embedding
 // ─────────────────────────────────────────
 
-/** สร้าง embedding vector จาก text */
 async function embedText(text) {
   const apiKey = config.gemini.apiKey;
   // ใช้ชื่อโมเดลที่ Google ยืนยันว่าคุณมีสิทธิ์ (จากที่รัน PowerShell)
-  const modelName = "models/gemini-embedding-2"; 
+  const modelName = "models/gemini-embedding-2";
   const url = `https://generativelanguage.googleapis.com/v1beta/${modelName}:embedContent?key=${apiKey}`;
 
   try {
     const response = await axios.post(url, {
       content: { parts: [{ text }] },
       // บังคับให้ขนาดข้อมูลเท่ากับ 768 เพื่อให้ลง Supabase ได้
-      outputDimensionality: 768 
+      outputDimensionality: 768,
     });
-    
+
     if (response.data && response.data.embedding) {
       return response.data.embedding.values;
     }
     throw new Error("โครงสร้างข้อมูลจาก Google ไม่ถูกต้อง");
   } catch (error) {
     if (error.response?.data) {
-      console.error("❌ Google Detail:", JSON.stringify(error.response.data));
+      console.error(":x: Google Detail:", JSON.stringify(error.response.data));
     }
     throw error;
   }
 }
 
-/** Embed หลาย texts เป็น batch (พร้อม rate-limit delay) */
-async function batchEmbed(texts, batchSize = 5, delayMs = 600) {
+async function batchEmbed(texts, batchSize = 5, delayMs = 1500) {
   const embeddings = [];
-
   for (let i = 0; i < texts.length; i += batchSize) {
     const batch = texts.slice(i, i + batchSize);
     const total = Math.ceil(texts.length / batchSize);
     console.log(`    📐 Embedding ${Math.floor(i / batchSize) + 1}/${total}`);
-
     const results = await Promise.all(batch.map(embedText));
-    embeddings.push(...results);
-
+    // embeddings.push(...results);
+    for (const res of results) {
+      embeddings.push(res); // ใช้ for-loop ธรรมดาปลอดภัยกับ Memory กว่า
+    }
     if (i + batchSize < texts.length) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
-
   return embeddings;
 }
 
@@ -110,58 +170,98 @@ async function batchEmbed(texts, batchSize = 5, delayMs = 600) {
 // WordPress API
 // ─────────────────────────────────────────
 
-/** ดึงบทความทั้งหมดจาก WordPress REST API */
+function getAuthHeaders() {
+  if (!config.wordpress.auth) return {};
+  return {
+    Authorization:
+      "Basic " + Buffer.from(config.wordpress.auth).toString("base64"),
+  };
+}
+
+/** ดึงบทความทั้งหมด */
 async function fetchAllArticles() {
   const articles = [];
-  let page = 1;
-  let totalPages = 1;
+  let page = 1,
+    totalPages = 1;
 
-  const headers = {};
-  if (config.wordpress.auth) {
-    headers["Authorization"] =
-      "Basic " + Buffer.from(config.wordpress.auth).toString("base64");
-  }
-
-  console.log(`\n📥 กำลังดึงบทความจาก: ${config.wordpress.url}`);
+  console.log(`\n📥 ดึงบทความจาก: ${config.wordpress.url}`);
 
   while (page <= totalPages) {
-    const { data, headers: resHeaders } = await axios.get(
-      `https://lavender-clam-276860.hostingersite.com/wp-json/wp/v2/posts`,
+    const { data, headers: h } = await axios.get(
+      `${config.wordpress.url}/wp-json/wp/v2/posts`,
       {
         params: {
           per_page: config.wordpress.perPage,
           page,
           status: "publish",
-          _fields: "id,title,content,excerpt,date,modified,link,categories,slug",
+          _fields:
+            "id,title,content,excerpt,date,modified,link,categories,slug",
         },
-        headers,
+        headers: getAuthHeaders(),
         timeout: 30000,
-      }
+      },
     );
-
     if (page === 1) {
-      totalPages = parseInt(resHeaders["x-wp-totalpages"] || "1");
-      const total = parseInt(resHeaders["x-wp-total"] || "0");
-      console.log(`   📄 บทความทั้งหมด: ${total} (${totalPages} หน้า)`);
+      totalPages = parseInt(h["x-wp-totalpages"] || "1");
+      const total = parseInt(h["x-wp-total"] || "0");
+      console.log(`   📄 ทั้งหมด: ${total} บทความ (${totalPages} หน้า)`);
     }
-
     articles.push(...data);
     console.log(`   ✅ หน้า ${page}/${totalPages}: ${data.length} บทความ`);
     page++;
-
     if (page <= totalPages) await new Promise((r) => setTimeout(r, 300));
   }
-
   return articles;
 }
 
-/** ดึงชื่อ categories จาก ID array */
+/** ดึงบทความเดียวตาม ID */
+async function fetchArticleById(articleId) {
+  const { data } = await axios.get(
+    `${config.wordpress.url}/wp-json/wp/v2/posts/${articleId}`,
+    {
+      params: {
+        _fields: "id,title,content,excerpt,date,modified,link,categories,slug",
+      },
+      headers: getAuthHeaders(),
+      timeout: 15000,
+    },
+  );
+  return data;
+}
+
+/** ดึงบทความที่แก้ไขหลังจาก date ที่กำหนด */
+async function fetchArticlesModifiedAfter(afterDate) {
+  const { data } = await axios.get(
+    `${config.wordpress.url}/wp-json/wp/v2/posts`,
+    {
+      params: {
+        per_page: 100,
+        status: "publish",
+        after: afterDate, // ISO8601 — WP จะคืนบทความที่ modified > after
+        orderby: "modified",
+        order: "desc",
+        _fields: "id,title,content,excerpt,date,modified,link,categories,slug",
+      },
+      headers: getAuthHeaders(),
+      timeout: 15000,
+    },
+  );
+  return data;
+}
+
+/** ดึงชื่อ categories */
 async function fetchCategoryNames(categoryIds) {
   if (!categoryIds?.length) return [];
   try {
     const { data } = await axios.get(
       `${config.wordpress.url}/wp-json/wp/v2/categories`,
-      { params: { include: categoryIds.join(","), per_page: 100, _fields: "id,name" } }
+      {
+        params: {
+          include: categoryIds.join(","),
+          per_page: 100,
+          _fields: "id,name",
+        },
+      },
     );
     return data.map((c) => c.name);
   } catch {
@@ -173,25 +273,22 @@ async function fetchCategoryNames(categoryIds) {
 // Indexing
 // ─────────────────────────────────────────
 
-/** Index บทความเดียวเข้า Supabase */
+/** Index บทความเดียว */
 async function indexArticle(article) {
-  const articleId   = String(article.id);
-  const title       = article.title?.rendered || "Untitled";
-  const bodyText    = htmlToPlainText(article.content?.rendered || "");
-  const excerpt     = htmlToPlainText(article.excerpt?.rendered || "").slice(0, 300);
-  const link        = article.link || "";
-  const modifiedAt  = article.modified || article.date;
-  const categories  = await fetchCategoryNames(article.categories || []);
-  const fullText    = `${title}\n\n${bodyText}`;
-
-  // --- เพิ่มบรรทัดนี้เพื่อป้องกัน Memory เต็ม ---
-  let rawContent = article.content?.rendered || "";
-  if (rawContent.length > 50000) { // ถ้าเนื้อหายาวเกิน 5 หมื่นตัวอักษร (ซึ่งผิดปกติสำหรับบทความทั่วไป)
-      rawContent = rawContent.slice(0, 50000); 
-  }
+  const articleId = String(article.id);
+  const title = article.title?.rendered || "Untitled";
+  const bodyText = htmlToPlainText(article.content?.rendered || "");
+  const excerpt = htmlToPlainText(article.excerpt?.rendered || "").slice(
+    0,
+    300,
+  );
+  const link = article.link || "";
+  const modifiedAt = article.modified || article.date;
+  const categories = await fetchCategoryNames(article.categories || []);
+  const fullText = `${title}\n\n${bodyText}`;
 
   if (fullText.trim().length < 100) {
-    console.log(`  ⏭️  ข้าม (บทความสั้นเกิน): "${title}"`);
+    console.log(`  ⏭️  ข้ามบทความสั้น: "${title}"`);
     return 0;
   }
 
@@ -201,7 +298,7 @@ async function indexArticle(article) {
   const embeddings = await batchEmbed(chunks);
 
   const documents = chunks.map((chunk, i) => ({
-    id:   `article_${articleId}_chunk_${i}`,
+    id: `article_${articleId}_chunk_${i}`,
     text: chunk,
     embedding: embeddings[i],
     metadata: {
@@ -210,50 +307,53 @@ async function indexArticle(article) {
       excerpt,
       link,
       modifiedAt,
-      chunkIndex:  i,
+      chunkIndex: i,
       totalChunks: chunks.length,
-      categories:  categories.join(", "),
+      categories: categories.join(", "),
     },
   }));
 
+  await deleteArticle(articleId);
   await addDocuments(documents);
   return chunks.length;
 }
 
 // ─────────────────────────────────────────
-// Main Sync
+// Sync Modes
 // ─────────────────────────────────────────
 
 /**
- * Sync บทความจาก WordPress → Supabase
- * @param {boolean} fullReindex — ล้างทั้งหมดแล้ว index ใหม่
+ * FULL SYNC — ดึงทั้งหมด เฉพาะบทความที่ยังไม่มีหรือ modified เปลี่ยน
+ * @param {boolean} forceAll — true = index ทุกบทความใหม่หมด
  */
-async function syncWordpress(fullReindex = false) {
+async function syncWordpress(forceAll = false) {
   console.log("\n🚀 เริ่ม WordPress sync...");
   const startTime = Date.now();
 
-  const articles   = await fetchAllArticles();
-  const indexedIds = fullReindex ? new Set() : await getIndexedArticleIds();
+  const articles = await fetchAllArticles();
+  const modifiedAtMap = forceAll ? new Map() : await getModifiedAtMap();
 
-  console.log(`\n📚 กำลัง process ${articles.length} บทความ...`);
-  console.log(`📌 Index แล้ว: ${indexedIds.size} บทความ`);
+  console.log(`\n📚 process ${articles.length} บทความ...`);
 
-  let indexed = 0, skipped = 0, totalChunks = 0;
+  let indexed = 0,
+    skipped = 0,
+    totalChunks = 0;
 
   for (let i = 0; i < articles.length; i++) {
-    const article   = articles[i];
+    const article = articles[i];
     const articleId = String(article.id);
+    const modifiedAt = article.modified || article.date;
 
     process.stdout.write(`\n[${i + 1}/${articles.length}] `);
 
-    if (indexedIds.has(articleId)) {
-      console.log(`⏭️  ข้าม (index แล้ว): "${article.title?.rendered}"`);
+    // ข้ามถ้า modified ไม่เปลี่ยน
+    if (!forceAll && modifiedAtMap.get(articleId) === modifiedAt) {
+      console.log(`⏭️  ไม่มีการเปลี่ยนแปลง: "${article.title?.rendered}"`);
       skipped++;
       continue;
     }
 
     try {
-      await deleteArticle(articleId); // ลบของเก่าก่อน (ถ้ามี)
       const chunks = await indexArticle(article);
       totalChunks += chunks;
       indexed++;
@@ -264,11 +364,76 @@ async function syncWordpress(fullReindex = false) {
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`
-✅ Sync เสร็จสิ้น ใช้เวลา ${elapsed}s
-   📄 Index ใหม่:  ${indexed} บทความ
-   ⏭️  ข้าม:       ${skipped} บทความ
-   🧩 Chunks:     ${totalChunks}
+✅ Sync เสร็จ ใช้เวลา ${elapsed}s
+   📄 Index ใหม่/อัปเดต: ${indexed}
+   ⏭️  ข้าม (ไม่เปลี่ยน):  ${skipped}
+   🧩 Chunks:             ${totalChunks}
 `);
 }
 
-module.exports = { syncWordpress, indexArticle, embedText };
+/**
+ * INCREMENTAL SYNC — ดึงเฉพาะบทความที่แก้ไขหลัง afterDate
+ * ใช้ใน cron ทุกชั่วโมง
+ * @param {string} afterDate — ISO8601 เช่น "2024-01-01T00:00:00"
+ */
+async function syncModifiedAfter(afterDate) {
+  console.log(`\n🔄 Incremental sync (หลัง ${afterDate})...`);
+
+  const articles = await fetchArticlesModifiedAfter(afterDate);
+  if (articles.length === 0) {
+    console.log("   ✅ ไม่มีบทความใหม่/แก้ไข");
+    return 0;
+  }
+
+  console.log(`   📄 พบ ${articles.length} บทความที่เปลี่ยนแปลง`);
+
+  let totalChunks = 0;
+  for (const article of articles) {
+    try {
+      const chunks = await indexArticle(article);
+      totalChunks += chunks;
+    } catch (err) {
+      console.error(`  ❌ Error article ${article.id}:`, err.message);
+    }
+  }
+
+  console.log(`   🧩 Indexed ${totalChunks} chunks ใหม่`);
+  return totalChunks;
+}
+
+/**
+ * SINGLE ARTICLE — index บทความเดียวจาก ID
+ * ใช้เมื่อได้รับ WordPress Webhook
+ * @param {string|number} articleId
+ */
+async function syncSingleArticle(articleId) {
+  console.log(`\n⚡ Single sync: article #${articleId}`);
+  try {
+    const article = await fetchArticleById(articleId);
+    // ถ้าเป็น draft/trash จาก webhook ให้ลบออก
+    if (article.status !== "publish") {
+      await deleteArticle(String(articleId));
+      console.log(`  🗑️  ลบออก (status: ${article.status})`);
+      return 0;
+    }
+    const chunks = await indexArticle(article);
+    console.log(`  ✅ Indexed ${chunks} chunks`);
+    return chunks;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      // บทความถูกลบ
+      await deleteArticle(String(articleId));
+      console.log(`  🗑️  ลบออก (บทความถูกลบจาก WordPress)`);
+      return 0;
+    }
+    throw err;
+  }
+}
+
+module.exports = {
+  syncWordpress,
+  syncModifiedAfter,
+  syncSingleArticle,
+  indexArticle,
+  embedText,
+};
