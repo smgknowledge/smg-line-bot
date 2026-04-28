@@ -8,7 +8,7 @@ const config = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,
-    chatModel: "gemini-2.0-flash-lite",
+    chatModel: "gemini-flash-lite-latest",
     embeddingModel: "gemini-embedding-2",
   },
   wordpress: {

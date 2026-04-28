@@ -64,7 +64,10 @@ async function generateAnswer(userId, query) {
   if (!chatSessions.has(userId)) {
     const model = genAI.getGenerativeModel({
       model: config.gemini.chatModel,
-      generationConfig: { maxOutputTokens: 1024, temperature: 0.3 },
+      generationConfig: { maxOutputTokens: 512, temperature: 0.7 },
+  //     systemInstruction: `คุณคือผู้เชี่ยวชาญจาก SMG Glass ตอบคำถามโดยใช้ข้อมูลที่ให้มาเท่านั้น 
+  // กฎ: ตอบกระชับไม่เกิน 3 บรรทัด และต้องปิดท้ายด้วย 1 คำถามเพื่อถามความต้องการลูกค้าเสมอ 
+  // ห้ามตอบยาว ห้ามเกริ่นนำ`
     });
     chatSessions.set(userId, model.startChat({ history: [] }));
     setTimeout(() => {
@@ -73,13 +76,15 @@ async function generateAnswer(userId, query) {
     }, SESSION_TTL_MS);
   }
 
-  const prompt = buildSystemPrompt(contexts) + "\n\n" + query;
-  const chat   = chatSessions.get(userId);
+  const prompt = `สรุปคำตอบจากเนื้อหานี้ไม่เกิน 3 บรรทัดและถามต่อ: \n\n ${buildSystemPrompt(contexts)} \n\n คำถามลูกค้า: ${query}`
+  const chat = chatSessions.get(userId);
   const result = await chat.sendMessage(prompt);
   const answer = result.response.text();
 
   const sources = [...new Set(contexts.map((c) => c.metadata.title))];
-  console.log(`✅ ตอบแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`);
+  console.log(
+    `✅ ตอบแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`,
+  );
 
   // คืนทั้ง answer และ contexts ให้ lineHandler เอาไปสร้าง Flex
   return { answer, contexts };
