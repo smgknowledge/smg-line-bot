@@ -161,7 +161,7 @@ async function generateAnswer(userId, query) {
   }
 
   const chat = getOrCreateSession(userId);
-  const prompt = `สรุปคำตอบจากเนื้อหานี้ไม่เกิน 3 บรรทัดและถามต่อ: \n\n ${buildSystemPrompt(contexts)} \n\n คำถามลูกค้า: ${query}`;
+  const prompt = `ตอบสั้นๆ 1-2 ประโยค ห้ามอารัมภบท ห้ามแนะนำบริษัท ตอบตรงประเด็นแล้วถามต่อ 1 คำถาม: \n\n ${buildSystemPrompt(contexts)} \n\n คำถามลูกค้า: ${query}`;
   const result = await chat.sendMessage(prompt);
   const answer = result.response.text();
 
