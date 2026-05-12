@@ -2,7 +2,7 @@
 // เพิ่มข้อมูลแบบพิมพ์เองลงใน Vector DB
 // เหมาะกับ: FAQ, ข้อมูลบริษัท, นโยบาย, ราคา, ฯลฯ
 
-const { indexText } = require("./shared");
+const { indexText } = require("../shared");
 
 /**
  * โครงสร้างข้อมูล manual entries

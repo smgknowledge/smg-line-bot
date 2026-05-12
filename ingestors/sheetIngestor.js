@@ -6,7 +6,7 @@
 //   2. Private sheet — ต้องมี Google Service Account credentials
 
 const axios  = require("axios");
-const { indexText } = require("./shared");
+const { indexText } = require("../shared");
 
 // ─────────────────────────────────────────
 // Mode 1: Public Sheet (แนะนำ - ง่ายที่สุด)

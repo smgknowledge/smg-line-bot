@@ -70,15 +70,7 @@ function parseAdminCommand(senderId, text) {
     return `✅ รับเคส ${uid.slice(0, 8)}... แล้วครับ\nบอทจะหยุดตอบ user นี้จนกว่าจะพิมพ์ /resume ${uid}`;
   }
 
-  // /resume — resume user ที่อยู่ใน handoff ทั้งหมด หรือระบุ userId ก็ได้
-  if (/^\/resume$/i.test(trimmed)) {
-    const list = getStatus();
-    if (list.length === 0) return "ℹ️ ไม่มี user ที่อยู่ใน handoff อยู่แล้วครับ";
-    list.forEach((r) => resume(r.userId));
-    return `✅ คืนบอทให้ ${list.length} user แล้วครับ`;
-  }
-
-  // /resume U1234abcd — ระบุ userId เฉพาะเจาะจงก็ยังได้
+  // /resume U1234abcd
   const resumeMatch = trimmed.match(/^\/resume\s+(U\S+)/i);
   if (resumeMatch) {
     const uid = resumeMatch[1];

@@ -10,6 +10,7 @@ const { config, validateConfig }           = require("./config");
 const { initVectorStore, getCount }        = require("./vectorStore");
 const { handleLineEvent }                  = require("./lineHandler");
 const { syncWordpress, syncModifiedAfter, syncSingleArticle } = require("./wordpressSync");
+const { takeOver, resume, getStatus }      = require("./handoff");
 
 validateConfig();
 
@@ -121,6 +122,42 @@ app.post("/sync", async (req, res) => {
 // ─────────────────────────────────────────
 // Start + Cron
 // ─────────────────────────────────────────
+
+// ── Handoff API ─────────────────────────────────────────────────────
+// POST /handoff/take   { "userId": "Uxxxx", "agentId": "..." }
+// POST /handoff/resume { "userId": "Uxxxx" }
+// GET  /handoff/status
+// ตั้งค่า HANDOFF_SECRET ใน .env เพื่อป้องกัน endpoint
+app.post("/handoff/take", express.json(), (req, res) => {
+  const secret = req.headers["x-handoff-secret"];
+  if (process.env.HANDOFF_SECRET && secret !== process.env.HANDOFF_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { userId, agentId } = req.body || {};
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  takeOver(userId, agentId || "agent");
+  res.json({ ok: true, userId, status: "handed_off" });
+});
+
+app.post("/handoff/resume", express.json(), (req, res) => {
+  const secret = req.headers["x-handoff-secret"];
+  if (process.env.HANDOFF_SECRET && secret !== process.env.HANDOFF_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const had = resume(userId);
+  res.json({ ok: true, userId, status: had ? "resumed" : "was_not_handed_off" });
+});
+
+app.get("/handoff/status", (req, res) => {
+  const secret = req.headers["x-handoff-secret"];
+  if (process.env.HANDOFF_SECRET && secret !== process.env.HANDOFF_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  res.json({ handoffs: getStatus() });
+});
+// ────────────────────────────────────────────────────────────────────
 
 async function start() {
   console.log("🚀 กำลังเริ่ม Line WP Gemini Bot...\n");

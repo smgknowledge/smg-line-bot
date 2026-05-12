@@ -4,7 +4,7 @@
 
 const fs   = require("fs");
 const path = require("path");
-const { indexText } = require("./shared");
+const { indexText } = require("../shared");
 
 // ─────────────────────────────────────────
 // Parsers — โหลด library ตาม file type
