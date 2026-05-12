@@ -35,10 +35,7 @@ intentType ต้องเป็นหนึ่งในนี้:
 
   try {
     const result = await model.generateContent(prompt);
-    const raw = result.response
-      .text()
-      .trim()
-      .replace(/```json|```/g, "");
+    const raw = result.response.text().trim().replace(/```json|```/g, "");
     const parsed = JSON.parse(raw);
     return {
       intentType: ["info", "unclear", "escalate"].includes(parsed.intentType)
@@ -77,6 +74,7 @@ function buildSystemPrompt(contexts) {
 - ตอบโดยอ้างอิงจากบทความที่ให้ไว้เท่านั้น
 - ถ้าไม่มีข้อมูลในบทความ ให้บอกตรงๆ ว่าไม่ทราบ อย่าเดา
 - ตอบเป็นภาษาไทยเสมอ กระชับ เข้าใจง่าย ใช้สรรพนาม "ผม" และลงท้ายด้วย "ครับ"
+- ห้ามอารัมภบทหรือขึ้นต้นด้วยการแนะนำตัวเอง เช่น "SMG ให้บริการ..." หรือ "ยินดีช่วยเหลือ..." ให้ตอบตรงประเด็นและถามต่อได้เลย
 - ห้ามสร้างข้อมูลที่ไม่มีในบทความ
 - ห้ามเสนอ "ประสานงาน" "ติดต่อให้" "ส่งต่อให้" หรือรับปากแทนพนักงาน
 - ถ้าลูกค้าต้องการคุยกับคน ให้บอกว่า "พิมพ์ 'ขอคุยกับเจ้าหน้าที่' ได้เลยครับ"
@@ -168,9 +166,7 @@ async function generateAnswer(userId, query) {
   const answer = result.response.text();
 
   const sources = [...new Set(contexts.map((c) => c.metadata.title))];
-  console.log(
-    `✅ ตอบแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`,
-  );
+  console.log(`✅ ตอบแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`);
 
   return { answer, contexts, intentType, reason };
 }
@@ -188,12 +184,7 @@ async function generateAnswer(userId, query) {
  *   imageIntent: string
  * }}
  */
-async function generateAnswerFromImage(
-  userId,
-  imageBuffer,
-  mimeType,
-  caption = "",
-) {
+async function generateAnswerFromImage(userId, imageBuffer, mimeType, caption = "") {
   console.log(`\n🖼️  Image query from ${userId.slice(0, 8)}... (${mimeType})`);
 
   // ── Step 1: Vision → วิเคราะห์ภาพ + classify intent พร้อมกัน ──
@@ -226,32 +217,23 @@ intentType: info=ถามทั่วไป unclear=คลุมเครือ
   ]);
 
   // parse JSON — fallback gracefully ถ้า Gemini ตอบผิด format
-  let imageObject = "",
-    imageIntent = "",
-    intentType = "info",
-    searchQuery = "";
+  let imageObject = "", imageIntent = "", intentType = "info", searchQuery = "";
   try {
-    const raw = visionResult.response
-      .text()
-      .trim()
-      .replace(/```json|```/g, "");
+    const raw = visionResult.response.text().trim().replace(/```json|```/g, "");
     const parsed = JSON.parse(raw);
-    imageObject = parsed.object || "";
-    imageIntent = parsed.intent || caption || "";
-    intentType = ["info", "unclear", "escalate"].includes(parsed.intentType)
-      ? parsed.intentType
-      : "info";
+    imageObject = parsed.object      || "";
+    imageIntent = parsed.intent      || caption || "";
+    intentType  = ["info", "unclear", "escalate"].includes(parsed.intentType)
+      ? parsed.intentType : "info";
     searchQuery = parsed.searchQuery || `${imageObject} ${imageIntent}`;
   } catch {
     searchQuery = visionResult.response.text().trim();
     imageObject = searchQuery;
     imageIntent = caption || "";
-    intentType = "info";
+    intentType  = "info";
   }
 
-  console.log(
-    `🎯 Intent: ${intentType} | ภาพ: "${imageObject}" | ต้องการ: "${imageIntent}"`,
-  );
+  console.log(`🎯 Intent: ${intentType} | ภาพ: "${imageObject}" | ต้องการ: "${imageIntent}"`);
 
   // ── escalate ──
   if (intentType === "escalate") {
@@ -300,9 +282,7 @@ intentType: info=ถามทั่วไป unclear=คลุมเครือ
   const answer = result.response.text();
 
   const sources = [...new Set(contexts.map((c) => c.metadata.title))];
-  console.log(
-    `✅ ตอบภาพแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`,
-  );
+  console.log(`✅ ตอบภาพแล้ว (${answer.length} ตัวอักษร) | แหล่ง: ${sources.join(", ")}`);
 
   return { answer, contexts, intentType, imageObject, imageIntent };
 }
