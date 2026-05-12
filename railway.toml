@@ -1,10 +1,7 @@
 [build]
 builder = "nixpacks"
 
-[nixpacks]
-providers = ["node"]
-
 [deploy]
-startCommand = "npm start"
+startCommand = "node index.js"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
